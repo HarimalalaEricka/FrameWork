@@ -1,4 +1,4 @@
-package com.framework;
+package com.framework.servlet;
 
 import javax.servlet.*;
 import javax.servlet.http.*;
