@@ -7,6 +7,9 @@ BIN="bin"
 LIB="lib"
 FRAMEWORK_JAR="$LIB/framework.jar"
 JAKARTA_JAR="$LIB/servlet-api.jar"
+REFLECTIONS_JAR="$LIB/reflections-0.9.10.jar"
+GUAVA_JAR="$LIB/guava-31.1-jre.jar"
+JAVASSIST_jar="$LIB/javassist-3.29.2-GA.jar"
 
 # =====================================
 # Nettoyer ancien bin
@@ -26,7 +29,7 @@ echo "Compilation du framework..."
 echo "==============================="
 
 find "$SRC" -name "*.java" > sources.txt
-javac -classpath "$JAKARTA_JAR" -d "$BIN" @sources.txt
+javac -classpath "$JAKARTA_JAR:$REFLECTIONS_JAR:$GUAVA_JAR:$JAVASSIST_jar" -d "$BIN" @sources.txt
 
 if [ $? -ne 0 ]; then
     echo
