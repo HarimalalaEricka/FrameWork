@@ -54,24 +54,49 @@ public class FrontServlet extends HttpServlet {
     protected void processRequest(HttpServletRequest request, HttpServletResponse response)
             throws ServletException, IOException {
 
-        // Récupérer le chemin demandé
         String uri = request.getRequestURI();
-        String contextPath = request.getContextPath();
-        String path = uri.substring(contextPath.length());
+        String context = request.getContextPath();
+        String url = uri.substring(context.length());  
 
-        // Construire le chemin réel sur le serveur
-        String realPath = getServletContext().getRealPath(path);
+        // Vérifier si la ressource existe physiquement
+        String realPath = getServletContext().getRealPath(url);
         File fichier = new File(realPath);
 
         if (fichier.exists() && fichier.isFile()) {
-            // Si la ressource existe (ex: JSP), on y fait un forward
-            RequestDispatcher dispatcher = request.getRequestDispatcher(path);
+            RequestDispatcher dispatcher = request.getRequestDispatcher(url);
             dispatcher.forward(request, response);
-        } else {
-            // Sinon on affiche un message
+            return;
+        }
+
+        // Rechercher si l’URL correspond à un controller
+        if (!urlMapping.containsKey(url)) {
             response.setContentType("text/plain");
-            PrintWriter out = response.getWriter();
-            out.println("Votre URL demandée est : " + path);
+            response.getWriter().println("URL introuvable : " + url);
+            return;
+        }
+        Method method = urlMapping.get(url);
+        Class<?> controllerClass = controllerMapping.get(url);
+
+        try {
+            Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
+
+            // Appeler la méthode du controller
+            Object retour = method.invoke(controllerInstance);
+
+            // Si retour = String → affichage DIRECT
+            if (retour instanceof String) {
+                response.setContentType("text/plain");
+                PrintWriter out = response.getWriter();
+                out.print((String) retour);
+                return;
+            }
+            response.setContentType("text/plain");
+            response.getWriter().println("Type de retour non supporté : " + retour.getClass());
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            response.setContentType("text/plain");
+            response.getWriter().println("Erreur framework : " + e.getMessage());
         }
     }
 }
