@@ -8,12 +8,13 @@ import java.util.*;
 
 import com.framework.annotation.*;
 import com.framework.core.*;
+import com.framework.model.*;
 
 public class FrontServlet extends HttpServlet {
 
     private Map<String, Method> urlMapping = new HashMap<>();
     private Map<String, Class<?>> controllerMapping = new HashMap<>();
-    private String packageController = "com.app.controller";
+    private String packageController = "com.app.controllers";
 
     @Override
     public void init() throws ServletException {
@@ -88,6 +89,14 @@ public class FrontServlet extends HttpServlet {
                 response.setContentType("text/plain");
                 PrintWriter out = response.getWriter();
                 out.print((String) retour);
+                return;
+            }
+            else if(retour instanceof ModelView)
+            {
+                ModelView model = (ModelView) retour;
+                String view = model.getView();
+                RequestDispatcher dispatcher = request.getRequestDispatcher(view);
+                dispatcher.forward(request, response);
                 return;
             }
             response.setContentType("text/plain");
