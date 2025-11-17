@@ -1,9 +1,13 @@
 package com.framework.model;
 
+import java.util.*;
+
 public class ModelView
 {
     private String view;
-    public ModelView(String view)
+    private Map<String, Object> model = new HashMap<>();
+
+    public ModelView()
     {
         this.view = view;
     }
@@ -14,5 +18,13 @@ public class ModelView
     public void setView( String view)
     {
         this.view = view;
+    }
+    public Map<String, Object> getModel()
+    {
+        return this.model;
+    }
+    public void addAttribute(String name, Object value)
+    {
+        model.put(name, value);
     }
 }
