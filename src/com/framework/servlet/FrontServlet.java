@@ -3,8 +3,41 @@ package com.framework.servlet;
 import javax.servlet.*;
 import javax.servlet.http.*;
 import java.io.*;
+import java.lang.reflect.*;
+import java.util.*;
+
+import com.framework.annotation.*;
+import com.framework.core.*;
 
 public class FrontServlet extends HttpServlet {
+
+    private Map<String, Method> urlMapping = new HashMap<>();
+    private Map<String, Class<?>> controllerMapping = new HashMap<>();
+    private String packageController = "com.app.controller";
+
+    @Override
+    public void init() throws ServletException {
+        try {
+            System.out.println("=== FrontServlet.init() : scan des controllers ===");
+            ClassScanner scanner = new ClassScanner(packageController);
+            scanner.scanControllers();
+            urlMapping.putAll(scanner.getUrlMapping());
+            controllerMapping.putAll(scanner.getControllerMapping());
+            scanner.printRoutes();
+            
+            ServletContext context = getServletContext();
+            context.setAttribute("controllerPackage", packageController);
+            context.setAttribute("urlMapping", this.urlMapping);
+            context.setAttribute("controllerMapping", this.controllerMapping);
+            System.out.println("✅ Package contrôleur et routes enregistrés dans le ServletContext !");
+            System.out.println("=== FrontServlet.init() terminé ===");
+
+        } catch (Exception e) {
+            e.printStackTrace();
+            throw new ServletException("Erreur lors du scan des controllers", e);
+        }
+    }
+
 
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
