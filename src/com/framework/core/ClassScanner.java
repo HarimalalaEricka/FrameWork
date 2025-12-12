@@ -7,13 +7,12 @@ import org.reflections.Reflections;
 import java.lang.reflect.Method;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.regex.Pattern;
 
 public class ClassScanner {
 
     private String basePackage;
-    private Map<Pattern, Method> urlMapping;           
-    private Map<Pattern, Class<?>> controllerMapping;  
+    private Map<String, Method> urlMapping;           // URL → Méthode
+    private Map<String, Class<?>> controllerMapping;  // URL → Controller
 
     public ClassScanner(String basePackage) {
         this.basePackage = basePackage;
@@ -34,12 +33,8 @@ public class ClassScanner {
                         HandleUrl annotation = method.getAnnotation(HandleUrl.class);
                         String url = annotation.value();
 
-                        // Transforme {param} en regex .* pour matcher n’importe quelle valeur
-                        String regex = url.replaceAll("\\{[^/]+\\}", ".*");
-                        Pattern pattern = Pattern.compile(regex);
-
-                        urlMapping.put(pattern, method);
-                        controllerMapping.put(pattern, controllerClass);
+                        urlMapping.put(url, method);
+                        controllerMapping.put(url, controllerClass);
                     }
                 }
             }
@@ -48,22 +43,37 @@ public class ClassScanner {
             e.printStackTrace();
         }
     }
-
-    public Map<Pattern, Method> getUrlMapping() {
+    public Map<String, Method> getUrlMapping() {
         return urlMapping;
     }
 
-    public Map<Pattern, Class<?>> getControllerMapping() {
+    public Map<String, Class<?>> getControllerMapping() {
         return controllerMapping;
     }
 
     public void printRoutes() {
         System.out.println("=== Routes trouvées par Controller ===");
-        for (Pattern pattern : urlMapping.keySet()) {
-            Method m = urlMapping.get(pattern);
-            Class<?> c = controllerMapping.get(pattern);
-            System.out.println("Controller: " + c.getSimpleName() + " → " + pattern.pattern() + " → " + m.getName());
+
+        Map<Class<?>, Map<String, Method>> grouped = new HashMap<>();
+
+        for (String url : urlMapping.keySet()) {
+            Method m = urlMapping.get(url);
+            Class<?> c = controllerMapping.get(url);
+
+            grouped.putIfAbsent(c, new HashMap<>());
+            grouped.get(c).put(url, m);
         }
+
+        for (Class<?> controller : grouped.keySet()) {
+            System.out.println("Controller : " + controller.getSimpleName());
+            Map<String, Method> routes = grouped.get(controller);
+            for (String url : routes.keySet()) {
+                System.out.println("    " + url + " → " + routes.get(url).getName());
+            }
+            System.out.println();
+        }
+
         System.out.println("=== Fin des routes ===");
     }
+
 }

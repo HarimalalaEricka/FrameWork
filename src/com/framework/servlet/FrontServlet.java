@@ -5,15 +5,15 @@ import javax.servlet.http.*;
 import java.io.*;
 import java.lang.reflect.*;
 import java.util.*;
-import java.util.regex.Pattern;
 
-import com.framework.core.ClassScanner;
-import com.framework.model.ModelView;
+import com.framework.annotation.*;
+import com.framework.core.*;
+import com.framework.model.*;
 
 public class FrontServlet extends HttpServlet {
 
-    private Map<Pattern, Method> urlMapping = new HashMap<>();
-    private Map<Pattern, Class<?>> controllerMapping = new HashMap<>();
+    private Map<String, Method> urlMapping = new HashMap<>();
+    private Map<String, Class<?>> controllerMapping = new HashMap<>();
     private String packageController = "com.app.controllers";
 
     @Override
@@ -25,7 +25,7 @@ public class FrontServlet extends HttpServlet {
             urlMapping.putAll(scanner.getUrlMapping());
             controllerMapping.putAll(scanner.getControllerMapping());
             scanner.printRoutes();
-
+            
             ServletContext context = getServletContext();
             context.setAttribute("controllerPackage", packageController);
             context.setAttribute("urlMapping", this.urlMapping);
@@ -38,6 +38,7 @@ public class FrontServlet extends HttpServlet {
             throw new ServletException("Erreur lors du scan des controllers", e);
         }
     }
+
 
     @Override
     protected void doGet(HttpServletRequest request, HttpServletResponse response)
@@ -56,49 +57,42 @@ public class FrontServlet extends HttpServlet {
 
         String uri = request.getRequestURI();
         String context = request.getContextPath();
-        String url = uri.substring(context.length());
+        String url = uri.substring(context.length());  
 
         // Vérifier si la ressource existe physiquement
         String realPath = getServletContext().getRealPath(url);
         File fichier = new File(realPath);
+
         if (fichier.exists() && fichier.isFile()) {
             RequestDispatcher dispatcher = request.getRequestDispatcher(url);
             dispatcher.forward(request, response);
             return;
         }
 
-        // Rechercher le controller correspondant avec Pattern
-        Method methodToCall = null;
-        Class<?> controllerClass = null;
-        for (Pattern pattern : urlMapping.keySet()) {
-            if (pattern.matcher(url).matches()) {
-                methodToCall = urlMapping.get(pattern);
-                controllerClass = controllerMapping.get(pattern);
-                break;
-            }
-        }
-
-        if (methodToCall == null) {
+        // Rechercher si l’URL correspond à un controller
+        if (!urlMapping.containsKey(url)) {
             response.setContentType("text/plain");
             response.getWriter().println("URL introuvable : " + url);
             return;
         }
+        Method method = urlMapping.get(url);
+        Class<?> controllerClass = controllerMapping.get(url);
 
         try {
             Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
 
-            // Tous les paramètres restent null pour l'instant
-            Parameter[] params = methodToCall.getParameters();
-            Object[] args = new Object[params.length];
-            Arrays.fill(args, null);
+            // Appeler la méthode du controller
+            Object retour = method.invoke(controllerInstance);
 
-            Object retour = methodToCall.invoke(controllerInstance, args);
-
-            // Gérer le type de retour
+            // Si retour = String → affichage DIRECT
             if (retour instanceof String) {
                 response.setContentType("text/plain");
-                response.getWriter().print((String) retour);
-            } else if (retour instanceof ModelView) {
+                PrintWriter out = response.getWriter();
+                out.print((String) retour);
+                return;
+            }
+            else if(retour instanceof ModelView)
+            {
                 ModelView model = (ModelView) retour;
                 String view = model.getView();
                 for (Map.Entry<String, Object> entry : model.getModel().entrySet()) {
@@ -106,10 +100,10 @@ public class FrontServlet extends HttpServlet {
                 }
                 RequestDispatcher dispatcher = request.getRequestDispatcher(view);
                 dispatcher.forward(request, response);
-            } else {
-                response.setContentType("text/plain");
-                response.getWriter().println("Type de retour non supporté : " + retour.getClass());
+                return;
             }
+            response.setContentType("text/plain");
+            response.getWriter().println("Type de retour non supporté : " + retour.getClass());
 
         } catch (Exception e) {
             e.printStackTrace();
