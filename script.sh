@@ -29,7 +29,7 @@ echo "Compilation du framework..."
 echo "==============================="
 
 find "$SRC" -name "*.java" > sources.txt
-javac -classpath "$JAKARTA_JAR:$REFLECTIONS_JAR:$GUAVA_JAR:$JAVASSIST_jar" -d "$BIN" @sources.txt
+javac -parameters -classpath "$JAKARTA_JAR:$REFLECTIONS_JAR:$GUAVA_JAR:$JAVASSIST_jar" -d "$BIN" @sources.txt
 
 if [ $? -ne 0 ]; then
     echo

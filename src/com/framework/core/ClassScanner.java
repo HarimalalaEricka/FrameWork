@@ -23,6 +23,7 @@ public class ClassScanner {
 
     /**
      * Scanne le package et stocke toutes les routes URL → Method / Controller
+     * Transforme les {param} en regex avec groupes nommés
      */
     public void scanControllers() {
         try {
@@ -32,10 +33,10 @@ public class ClassScanner {
                 for (Method method : controllerClass.getDeclaredMethods()) {
                     if (method.isAnnotationPresent(HandleUrl.class)) {
                         HandleUrl annotation = method.getAnnotation(HandleUrl.class);
-                        String url = annotation.value();
+                        String url = annotation.value(); // ex: /user/{id}/edit
 
-                        // Transforme {param} en regex .* pour matcher n’importe quelle valeur
-                        String regex = url.replaceAll("\\{[^/]+\\}", ".*");
+                        // Transforme {param} en groupe nommé regex : (?<param>[^/]+)
+                        String regex = url.replaceAll("\\{([^/]+)\\}", "(?<$1>[^/]+)");
                         Pattern pattern = Pattern.compile(regex);
 
                         urlMapping.put(pattern, method);
