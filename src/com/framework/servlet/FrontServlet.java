@@ -126,8 +126,26 @@ public class FrontServlet extends HttpServlet {
             String paramValue = null;
             
             System.out.println("\nTraitement paramètre " + i + ": " + param.getName() + " (type: " + param.getType() + ")");
-            paramValue = request.getParameter(param.getName());
-            System.out.println("  -> Valeur trouvée par nom: " + paramValue);
+            
+            // SPRINT 6 BIS : Vérifier si on a @RequestParam
+            RequestParam requestParam = param.getAnnotation(RequestParam.class);
+            
+            if (requestParam != null) {
+                System.out.println("  -> Avec @RequestParam(\"" + requestParam.value() + "\")");
+                paramValue = request.getParameter(requestParam.value());
+                System.out.println("  -> Valeur trouvée via @RequestParam: " + paramValue);
+            }
+            
+            // SPRINT 6 : Si pas d'annotation OU valeur non trouvée
+            if (requestParam == null || paramValue == null) {
+                if (requestParam == null) {
+                    System.out.println("  -> Sans @RequestParam, recherche par nom: " + param.getName());
+                } else {
+                    System.out.println("  -> @RequestParam non trouvé, recherche par nom: " + param.getName());
+                }
+                paramValue = request.getParameter(param.getName());
+                System.out.println("  -> Valeur trouvée par nom: " + paramValue);
+            }
             
             // Conversion de la valeur
             if (paramValue != null) {
