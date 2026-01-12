@@ -8,10 +8,25 @@ import java.util.*;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher; 
 import java.lang.reflect.ParameterizedType;
+import javax.servlet.ServletException;
+import javax.servlet.annotation.MultipartConfig;
+import javax.servlet.http.Part;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
+import java.util.Collection;
+import java.util.ArrayList;
+import java.util.List;
 
 import com.framework.core.ClassScanner;
-import com.framework.model.ModelView;
+import com.framework.model.*;
 import com.framework.annotation.*;
+import javax.servlet.annotation.MultipartConfig;
+
+@MultipartConfig(
+    maxFileSize = 1024 * 1024 * 10,      // 10MB max par fichier
+    maxRequestSize = 1024 * 1024 * 50,   // 50MB max par requête
+    fileSizeThreshold = 1024 * 1024      // 1MB avant écriture disque
+)
 
 public class FrontServlet extends HttpServlet {
 
@@ -193,6 +208,10 @@ public class FrontServlet extends HttpServlet {
         Parameter[] params = match.method.getParameters();
         Object[] args = new Object[params.length];
 
+        // Vérifier si c'est une requête multipart (upload fichier)
+        boolean isMultipart = isMultipartRequest(request);
+        System.out.println("📁 Requête multipart: " + isMultipart);
+
         // Combiner TOUTES les sources de paramètres
         Map<String, String> allParamSources = new HashMap<>();
 
@@ -200,14 +219,20 @@ public class FrontServlet extends HttpServlet {
         allParamSources.putAll(match.pathParams);
 
         // 2. Paramètres GET/POST (?name=value) - SPRINT 6
-        Enumeration<String> paramNames = request.getParameterNames();
-        while (paramNames.hasMoreElements()) {
-            String name = paramNames.nextElement();
-            allParamSources.put(name, request.getParameter(name));
+        if (isMultipart) {
+            // Pour multipart, on traite les fichiers séparément
+            handleMultipartParameters(request, allParamSources);
+        } else {
+            // Requête normale
+            Enumeration<String> paramNames = request.getParameterNames();
+            while (paramNames.hasMoreElements()) {
+                String name = paramNames.nextElement();
+                allParamSources.put(name, request.getParameter(name));
+            }
         }
         
         // DEBUG
-        System.out.println("=== DEBUG SPRINT 8 ===");
+        System.out.println("=== DEBUG SPRINT 10 ===");
         System.out.println("Path params: " + match.pathParams);
         System.out.println("All sources: " + allParamSources);
         
@@ -218,6 +243,34 @@ public class FrontServlet extends HttpServlet {
             
             System.out.println("\nParamètre " + i + ": " + param.getName() + 
                             " (type: " + paramType.getSimpleName() + ")");
+
+            // ==============================================
+            // SPRINT 10: GESTION DES FICHIERS UPLOADÉS
+            // ==============================================
+            if (param.isAnnotationPresent(FileUpload.class)) {
+                FileUpload fileUploadAnn = param.getAnnotation(FileUpload.class);
+                String fieldName = fileUploadAnn.value().isEmpty() ? param.getName() : fileUploadAnn.value();
+                
+                System.out.println("  -> 📁 DÉTECTION SPRINT 10: Upload fichier - champ: " + fieldName);
+                
+                if (isMultipart) {
+                    if (paramType == UploadedFile.class) {
+                        args[i] = handleSingleFileUpload(request, fieldName);
+                        System.out.println("  -> ✓ Fichier unique traité");
+                        continue;
+                    }
+                    
+                    if (paramType.isArray() && paramType.getComponentType() == UploadedFile.class) {
+                        args[i] = handleMultipleFileUpload(request, fieldName);
+                        System.out.println("  -> ✓ Fichiers multiples traités");
+                        continue;
+                    }
+                } else {
+                    // Si pas multipart, créer un UploadedFile vide
+                    args[i] = paramType == UploadedFile.class ? new UploadedFile() : null;
+                    continue;
+                }
+            }
 
             // SPRINT 8: Support de Map<String, Object> - DOIT ÊTRE EN PREMIER !
             if (Map.class.isAssignableFrom(paramType) || paramType.getName().equals("Map")) {
@@ -316,6 +369,7 @@ public class FrontServlet extends HttpServlet {
         }
         
         System.out.println("=== FIN DEBUG SPRINT 8 ===\n");
+
         Object result = match.method.invoke(controllerInstance, args);
         if (match.method.isAnnotationPresent(JsonResponse.class)) {
         // Convertir le résultat en JSON et écrire dans la réponse
@@ -680,6 +734,178 @@ public class FrontServlet extends HttpServlet {
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .replace("\t", "\\t");
+    }
+
+    // ==============================================
+    // SPRINT 10: MÉTHODES POUR L'UPLOAD DE FICHIERS
+    // ==============================================
+
+    /**
+     * Vérifie si la requête est multipart (upload fichiers)
+     */
+    private boolean isMultipartRequest(HttpServletRequest request) {
+        String contentType = request.getContentType();
+        return contentType != null && contentType.toLowerCase().startsWith("multipart/form-data");
+    }
+
+    /**
+     * Traite les paramètres d'une requête multipart
+     */
+    private void handleMultipartParameters(HttpServletRequest request, Map<String, String> allParamSources) 
+            throws IOException, ServletException {
+        
+        Collection<Part> parts = request.getParts();
+        if (parts != null) {
+            for (Part part : parts) {
+                String name = part.getName();
+                if (name != null && part.getSize() > 0) {
+                    // Si c'est un fichier, on ne le met pas dans allParamSources
+                    // Les fichiers sont traités séparément via @FileUpload
+                    String fileName = getFileName(part);
+                    if (fileName == null || fileName.isEmpty()) {
+                        // C'est un paramètre normal, pas un fichier
+                        String value = readPartAsString(part);
+                        allParamSources.put(name, value);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Gère l'upload d'un seul fichier
+     */
+    private UploadedFile handleSingleFileUpload(HttpServletRequest request, String fieldName) 
+            throws IOException, ServletException {
+        
+        System.out.println("📁 Upload fichier unique - champ: " + fieldName);
+        
+        Part filePart = request.getPart(fieldName);
+        if (filePart == null || filePart.getSize() == 0) {
+            System.out.println("  -> Aucun fichier pour le champ " + fieldName);
+            return new UploadedFile();
+        }
+        
+        String fileName = getFileName(filePart);
+        if (fileName == null || fileName.isEmpty()) {
+            System.out.println("  -> Nom de fichier vide");
+            return new UploadedFile();
+        }
+        
+        System.out.println("  -> Fichier reçu: " + fileName + " (" + filePart.getSize() + " bytes)");
+        
+        UploadedFile uploadedFile = new UploadedFile();
+        uploadedFile.setFileName(fileName);
+        uploadedFile.setContentType(filePart.getContentType());
+        uploadedFile.setSize(filePart.getSize());
+        
+        // Lire le contenu du fichier
+        try (InputStream inputStream = filePart.getInputStream();
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+            
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                outputStream.write(buffer, 0, bytesRead);
+            }
+            
+            uploadedFile.setContent(outputStream.toByteArray());
+            System.out.println("  -> Fichier chargé en mémoire: " + uploadedFile.getContent().length + " bytes");
+            
+        } catch (IOException e) {
+            System.err.println("  -> Erreur lecture fichier: " + e.getMessage());
+        }
+        
+        return uploadedFile;
+    }
+
+    /**
+     * Gère l'upload de plusieurs fichiers
+     */
+    private UploadedFile[] handleMultipleFileUpload(HttpServletRequest request, String fieldName) 
+            throws IOException, ServletException {
+        
+        System.out.println("📁 Upload multiple fichiers - champ: " + fieldName);
+        
+        Collection<Part> parts = request.getParts();
+        List<UploadedFile> uploadedFiles = new ArrayList<>();
+        
+        if (parts != null) {
+            for (Part part : parts) {
+                if (part.getName() != null && part.getName().equals(fieldName) && part.getSize() > 0) {
+                    
+                    String fileName = getFileName(part);
+                    if (fileName != null && !fileName.isEmpty()) {
+                        System.out.println("  -> Fichier trouvé: " + fileName);
+                        
+                        UploadedFile uploadedFile = new UploadedFile();
+                        uploadedFile.setFileName(fileName);
+                        uploadedFile.setContentType(part.getContentType());
+                        uploadedFile.setSize(part.getSize());
+                        
+                        // Lire le contenu
+                        try (InputStream inputStream = part.getInputStream();
+                            ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+                            
+                            byte[] buffer = new byte[4096];
+                            int bytesRead;
+                            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                                outputStream.write(buffer, 0, bytesRead);
+                            }
+                            
+                            uploadedFile.setContent(outputStream.toByteArray());
+                            uploadedFiles.add(uploadedFile);
+                            
+                        } catch (IOException e) {
+                            System.err.println("  -> Erreur lecture fichier: " + e.getMessage());
+                        }
+                    }
+                }
+            }
+        }
+        
+        System.out.println("  -> " + uploadedFiles.size() + " fichiers uploadés");
+        return uploadedFiles.toArray(new UploadedFile[0]);
+    }
+
+    /**
+     * Extrait le nom de fichier d'une Part
+     */
+    private String getFileName(Part part) {
+        String contentDisposition = part.getHeader("content-disposition");
+        if (contentDisposition != null) {
+            for (String token : contentDisposition.split(";")) {
+                if (token.trim().startsWith("filename")) {
+                    String fileName = token.substring(token.indexOf('=') + 1).trim().replace("\"", "");
+                    // Extraire juste le nom du fichier (sans le chemin complet)
+                    if (fileName.contains("\\")) {
+                        fileName = fileName.substring(fileName.lastIndexOf("\\") + 1);
+                    }
+                    if (fileName.contains("/")) {
+                        fileName = fileName.substring(fileName.lastIndexOf("/") + 1);
+                    }
+                    return fileName;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Lit une Part comme String (pour les paramètres normaux)
+     */
+    private String readPartAsString(Part part) throws IOException {
+        try (InputStream inputStream = part.getInputStream();
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {
+            
+            byte[] buffer = new byte[4096];
+            int bytesRead;
+            while ((bytesRead = inputStream.read(buffer)) != -1) {
+                outputStream.write(buffer, 0, bytesRead);
+            }
+            
+            return outputStream.toString("UTF-8");
+        }
     }
 
     // 🔹 Classe interne pour retourner méthode + controller
