@@ -7,6 +7,7 @@ import java.lang.reflect.*;
 import java.util.*;
 import java.util.regex.Pattern;
 import java.util.regex.Matcher; 
+import java.lang.reflect.ParameterizedType;
 
 import com.framework.core.ClassScanner;
 import com.framework.model.ModelView;
@@ -182,69 +183,87 @@ public class FrontServlet extends HttpServlet {
     }
 
     // 🔹 Appeler la méthode du controller avec les paramètres dynamiques (SPRINT 6 & 6 BIS)
-    private Object invokeControllerMethod(ControllerMatch match, HttpServletRequest request) throws Exception {
-        Object controllerInstance = match.controller.getDeclaredConstructor().newInstance();
-        Parameter[] params = match.method.getParameters();
-        Object[] args = new Object[params.length];
+    // 🔹 Appeler la méthode du controller avec les paramètres dynamiques (SPRINT 6, 6 BIS, 8)
+private Object invokeControllerMethod(ControllerMatch match, HttpServletRequest request) throws Exception {
+    Object controllerInstance = match.controller.getDeclaredConstructor().newInstance();
+    Parameter[] params = match.method.getParameters();
+    Object[] args = new Object[params.length];
 
-        // Combiner TOUTES les sources de paramètres
-        Map<String, String> allParamSources = new HashMap<>();
+    // Combiner TOUTES les sources de paramètres
+    Map<String, String> allParamSources = new HashMap<>();
 
-        // 1. Paramètres du chemin (/{id}/) - SPRINT 6 TER
-        allParamSources.putAll(match.pathParams);
+    // 1. Paramètres du chemin (/{id}/) - SPRINT 6 TER
+    allParamSources.putAll(match.pathParams);
 
-        // 2. Paramètres GET/POST (?name=value) - SPRINT 6
-        Enumeration<String> paramNames = request.getParameterNames();
-        while (paramNames.hasMoreElements()) {
-            String name = paramNames.nextElement();
-            allParamSources.put(name, request.getParameter(name));
+    // 2. Paramètres GET/POST (?name=value) - SPRINT 6
+    Enumeration<String> paramNames = request.getParameterNames();
+    while (paramNames.hasMoreElements()) {
+        String name = paramNames.nextElement();
+        allParamSources.put(name, request.getParameter(name));
+    }
+    
+    // DEBUG
+    System.out.println("=== DEBUG SPRINT 8 ===");
+    System.out.println("Path params: " + match.pathParams);
+    System.out.println("All sources: " + allParamSources);
+    
+    // Traiter chaque paramètre
+    for (int i = 0; i < params.length; i++) {
+        Parameter param = params[i];
+        Class<?> paramType = param.getType();
+        
+        System.out.println("\nParamètre " + i + ": " + param.getName() + 
+                        " (type: " + paramType.getSimpleName() + ")");
+
+        // SPRINT 8: Support de Map<String, Object> - DOIT ÊTRE EN PREMIER !
+        if (Map.class.isAssignableFrom(paramType) || paramType.getName().equals("Map")) {
+            System.out.println("  -> ⚡ DÉTECTION SPRINT 8: C'est une Map!");
+            
+            // Créer une Map<String, Object> avec TOUS les paramètres
+            Map<String, Object> paramMap = new HashMap<>(allParamSources);
+            args[i] = paramMap;
+            
+            System.out.println("  -> ✓ Map<String, Object> injectée avec " + paramMap.size() + " éléments");
+            System.out.println("  -> Contenu: " + paramMap);
+            
+            continue; 
         }
         
-        // DEBUG
-        System.out.println("=== DEBUG COMBINÉ ===");
-        System.out.println("Path params: " + match.pathParams);
-        System.out.println("All sources: " + allParamSources);
-        
-        // Traiter chaque paramètre
-        for (int i = 0; i < params.length; i++) {
-            Parameter param = params[i];
-            String paramValue = null;
-            String searchSource = "";
+        // SPRINT 6 BIS : Priorité 1 - @RequestParam
+        RequestParam requestParam = param.getAnnotation(RequestParam.class);
+        if (requestParam != null) {
+            String paramName = requestParam.value();
+            String paramValue = allParamSources.get(paramName);
+            System.out.println("  -> Recherche via @RequestParam(\"" + paramName + "\"): " + paramValue);
             
-            System.out.println("\nParamètre " + i + ": " + param.getName() + 
-                            " (type: " + param.getType().getSimpleName() + ")");
-            
-            // SPRINT 6 BIS : Priorité 1 - @RequestParam
-            RequestParam requestParam = param.getAnnotation(RequestParam.class);
-            if (requestParam != null) {
-                String paramName = requestParam.value();
-                paramValue = allParamSources.get(paramName);
-                searchSource = "@RequestParam(\"" + paramName + "\")";
-                System.out.println("  -> Recherche via " + searchSource + ": " + paramValue);
-            }
-            
-            // SPRINT 6 : Priorité 2 - Nom de l'argument
-            if (paramValue == null) {
-                String paramName = param.getName();
-                paramValue = allParamSources.get(paramName);
-                searchSource = "nom d'argument \"" + paramName + "\"";
-                System.out.println("  -> Recherche via " + searchSource + ": " + paramValue);
-            }
-            
-            // Conversion
             if (paramValue != null) {
-                args[i] = convertParameter(paramValue, param.getType());
-                System.out.println("  -> ✓ Converti: " + args[i] + " (" + searchSource + ")");
+                args[i] = convertParameter(paramValue, paramType);
+                System.out.println("  -> ✓ Converti: " + args[i] + " (via @RequestParam)");
             } else {
-                args[i] = getDefaultValue(param.getType());
+                args[i] = getDefaultValue(paramType);
                 System.out.println("  -> ✗ Non trouvé, valeur par défaut: " + args[i]);
             }
+            continue;
         }
         
-        System.out.println("=== FIN DEBUG ===\n");
+        // SPRINT 6 : Priorité 2 - Nom de l'argument
+        String paramName = param.getName();
+        String paramValue = allParamSources.get(paramName);
+        System.out.println("  -> Recherche via nom d'argument \"" + paramName + "\": " + paramValue);
         
-        return match.method.invoke(controllerInstance, args);
+        if (paramValue != null) {
+            args[i] = convertParameter(paramValue, paramType);
+            System.out.println("  -> ✓ Converti: " + args[i] + " (via nom d'argument)");
+        } else {
+            args[i] = getDefaultValue(paramType);
+            System.out.println("  -> ✗ Non trouvé, valeur par défaut: " + args[i]);
+        }
     }
+    
+    System.out.println("=== FIN DEBUG SPRINT 8 ===\n");
+    
+    return match.method.invoke(controllerInstance, args);
+}
 
     // 🔹 Convertir un paramètre de String vers le type attendu
     private Object convertParameter(String value, Class<?> type) {
