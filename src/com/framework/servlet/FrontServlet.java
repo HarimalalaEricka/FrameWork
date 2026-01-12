@@ -10,13 +10,14 @@ import java.util.regex.Matcher;
 
 import com.framework.core.ClassScanner;
 import com.framework.model.ModelView;
-import com.framework.annotation.RequestParam;
+import com.framework.annotation.*;
 
 public class FrontServlet extends HttpServlet {
 
     private Map<Pattern, Method> urlMapping = new HashMap<>();
     private Map<Pattern, Class<?>> controllerMapping = new HashMap<>();
     private String packageController = "com.app.controllers";
+    private Map<Pattern, String> httpMethodMapping = new HashMap<>();
 
     @Override
     public void init() throws ServletException {
@@ -26,6 +27,7 @@ public class FrontServlet extends HttpServlet {
             scanner.scanControllers();
             urlMapping.putAll(scanner.getUrlMapping());
             controllerMapping.putAll(scanner.getControllerMapping());
+            httpMethodMapping.putAll(scanner.getHttpMethodMapping());
             scanner.printRoutes();
 
             ServletContext context = getServletContext();
@@ -57,19 +59,37 @@ public class FrontServlet extends HttpServlet {
         throws ServletException, IOException {
 
         String url = getRequestUrl(request);
+        String requestMethod = request.getMethod();
 
         // 1️⃣ Gérer les fichiers statiques
         if (forwardStaticFileIfExists(url, request, response)) return;
 
         // 2️⃣ Trouver la méthode et le controller
-        ControllerMatch match = findControllerMethod(url);
+        ControllerMatch match = findControllerMethod(url, requestMethod);
         if (match == null) {
             response.setContentType("text/plain");
             response.getWriter().println("URL introuvable : " + url);
             return;
         }
 
-        // 3️⃣ Appeler la méthode avec les paramètres dynamiques
+        // 3️⃣ Vérifier la méthode HTTP
+        // String requiredMethod = httpMethodMapping.get(match.pattern);
+        
+        // if (requiredMethod != null) {
+        //     if ("ANY".equals(requiredMethod)) {
+        //         // @HandleUrl : accepte GET et POST
+        //     } else if (!requiredMethod.equalsIgnoreCase(requestMethod)) {
+        //         // Méthode HTTP incorrecte
+        //         response.setContentType("text/plain");
+        //         response.getWriter().println("Erreur 405 - Méthode non autorisée");
+        //         response.getWriter().println("URL: " + url);
+        //         response.getWriter().println("Méthode requise: " + requiredMethod);
+        //         response.getWriter().println("Méthode reçue: " + requestMethod);
+        //         return;
+        //     }
+        // }
+
+        // 4 Appeler la méthode avec les paramètres dynamiques
         try {
             Object retour = invokeControllerMethod(match, request);
             handleReturnValue(retour, request, response);
@@ -101,20 +121,64 @@ public class FrontServlet extends HttpServlet {
     }
 
     // 🔹 Chercher le controller et la méthode correspondante à l'URL
-    private ControllerMatch findControllerMethod(String url) {
+    private ControllerMatch findControllerMethod(String url, String requestMethod) {
+        List<ControllerMatch> allMatches = new ArrayList<>();
+        
+        // Étape 1: Trouver TOUTES les routes qui correspondent à l'URL
         for (Pattern pattern : urlMapping.keySet()) {
             Matcher matcher = pattern.matcher(url);
             if (matcher.matches()) {
                 // Extraire les paramètres des groupes nommés
                 Map<String, String> pathParams = extractNamedGroups(matcher);
-                return new ControllerMatch(
+                
+                ControllerMatch match = new ControllerMatch(
                     urlMapping.get(pattern), 
                     controllerMapping.get(pattern),
-                    pathParams
+                    pathParams,
+                    pattern
                 );
+                allMatches.add(match);
             }
         }
-        return null;
+        
+        if (allMatches.isEmpty()) {
+            return null;
+        }
+        
+        // Étape 2: Si une seule correspondance, la retourner
+        if (allMatches.size() == 1) {
+            return allMatches.get(0);
+        }
+        
+        // Étape 3: Si plusieurs, filtrer par méthode HTTP
+        List<ControllerMatch> methodMatches = new ArrayList<>();
+        for (ControllerMatch match : allMatches) {
+            String requiredMethod = httpMethodMapping.get(match.pattern);
+            
+            // Vérifier si la méthode correspond
+            if ("ANY".equals(requiredMethod) || 
+                (requiredMethod != null && requiredMethod.equalsIgnoreCase(requestMethod))) {
+                methodMatches.add(match);
+            }
+        }
+        
+        // Étape 4: Gérer les résultats filtrés
+        if (methodMatches.isEmpty()) {
+            // Aucune méthode ne correspond à la méthode HTTP
+            return null;
+        } else if (methodMatches.size() == 1) {
+            return methodMatches.get(0);
+        } else {
+            // Plusieurs méthodes correspondent, prioriser les spécifiques sur "ANY"
+            for (ControllerMatch match : methodMatches) {
+                String method = httpMethodMapping.get(match.pattern);
+                if (!"ANY".equals(method)) {
+                    return match; // Retourner la première méthode spécifique
+                }
+            }
+            // Sinon retourner le premier "ANY"
+            return methodMatches.get(0);
+        }
     }
 
     // 🔹 Appeler la méthode du controller avec les paramètres dynamiques (SPRINT 6 & 6 BIS)
@@ -279,11 +343,13 @@ public class FrontServlet extends HttpServlet {
         Method method;
         Class<?> controller;
         Map<String, String> pathParams; // Paramètres extraits de l'URL
+        Pattern pattern;
         
-        ControllerMatch(Method m, Class<?> c, Map<String, String> params) {
+        ControllerMatch(Method m, Class<?> c, Map<String, String> params, Pattern p) {
             this.method = m;
             this.controller = c;
             this.pathParams = params;
+            this.pattern = p;
         }
     }
 }
