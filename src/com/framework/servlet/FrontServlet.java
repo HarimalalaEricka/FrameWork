@@ -92,8 +92,12 @@ public class FrontServlet extends HttpServlet {
 
         // 4 Appeler la méthode avec les paramètres dynamiques
         try {
-            Object retour = invokeControllerMethod(match, request);
+            Object retour = invokeControllerMethod(match, request, response);
             handleReturnValue(retour, request, response);
+            if( retour == null)
+            {
+                return;
+            }
         } catch (Exception e) {
             e.printStackTrace();
             response.setContentType("text/plain");
@@ -184,7 +188,7 @@ public class FrontServlet extends HttpServlet {
 
     // 🔹 Appeler la méthode du controller avec les paramètres dynamiques (SPRINT 6 & 6 BIS)
     // 🔹 Appeler la méthode du controller avec les paramètres dynamiques (SPRINT 6, 6 BIS, 8)
-    private Object invokeControllerMethod(ControllerMatch match, HttpServletRequest request) throws Exception {
+    private Object invokeControllerMethod(ControllerMatch match, HttpServletRequest request, HttpServletResponse response) throws Exception {
         Object controllerInstance = match.controller.getDeclaredConstructor().newInstance();
         Parameter[] params = match.method.getParameters();
         Object[] args = new Object[params.length];
@@ -312,8 +316,15 @@ public class FrontServlet extends HttpServlet {
         }
         
         System.out.println("=== FIN DEBUG SPRINT 8 ===\n");
-        
-        return match.method.invoke(controllerInstance, args);
+        Object result = match.method.invoke(controllerInstance, args);
+        if (match.method.isAnnotationPresent(JsonResponse.class)) {
+        // Convertir le résultat en JSON et écrire dans la réponse
+            String json = convertToJson(result);
+            response.setContentType("application/json;charset=UTF-8");
+            response.getWriter().write(json);
+            return null; // Indiquer que la réponse est déjà traitée
+        }
+        return result;
     }
 
     // 🔹 Convertir un paramètre de String vers le type attendu
@@ -362,7 +373,13 @@ public class FrontServlet extends HttpServlet {
 
     // 🔹 Gérer le type de retour d'une méthode
     private void handleReturnValue(Object retour, HttpServletRequest request, HttpServletResponse response)
-            throws ServletException, IOException {
+        throws ServletException, IOException {
+    
+        if (retour == null) {
+            // JSON déjà traité ou erreur
+            return;
+        }
+        
         if (retour instanceof String) {
             response.setContentType("text/plain");
             response.getWriter().print((String) retour);
@@ -374,7 +391,8 @@ public class FrontServlet extends HttpServlet {
             dispatcher.forward(request, response);
         } else {
             response.setContentType("text/plain");
-            response.getWriter().println("Type de retour non supporté : " + retour.getClass());
+            response.getWriter().println("Retour: " + retour);
+            response.getWriter().println("Type: " + retour.getClass().getName());
         }
     }
 
@@ -561,6 +579,107 @@ public class FrontServlet extends HttpServlet {
             e.printStackTrace();
         }
         return null;
+    }
+
+    private String convertToJson(Object obj) {
+    if (obj == null) return "null";
+    
+    if (obj instanceof String) {
+        return "\"" + escapeJson((String) obj) + "\"";
+    }
+    
+    if (obj instanceof Number || obj instanceof Boolean) {
+        return obj.toString();
+    }
+    
+    if (obj instanceof Map) {
+        return mapToJson((Map<?, ?>) obj);
+    }
+    
+    if (obj instanceof Collection) {
+        return collectionToJson((Collection<?>) obj);
+    }
+    
+    if (obj.getClass().isArray()) {
+        return arrayToJson(obj);
+    }
+    
+    // Objet Java custom (User, Employee, etc.)
+    return objectToJson(obj);
+}
+
+    private String mapToJson(Map<?, ?> map) {
+        StringBuilder json = new StringBuilder("{");
+        boolean first = true;
+        
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (!first) json.append(",");
+            json.append("\"").append(escapeJson(entry.getKey().toString())).append("\":");
+            json.append(convertToJson(entry.getValue()));
+            first = false;
+        }
+        
+        json.append("}");
+        return json.toString();
+    }
+
+    private String collectionToJson(Collection<?> collection) {
+        StringBuilder json = new StringBuilder("[");
+        boolean first = true;
+        
+        for (Object item : collection) {
+            if (!first) json.append(",");
+            json.append(convertToJson(item));
+            first = false;
+        }
+        
+        json.append("]");
+        return json.toString();
+    }
+
+    private String arrayToJson(Object array) {
+        StringBuilder json = new StringBuilder("[");
+        int length = Array.getLength(array);
+        
+        for (int i = 0; i < length; i++) {
+            if (i > 0) json.append(",");
+            json.append(convertToJson(Array.get(array, i)));
+        }
+        
+        json.append("]");
+        return json.toString();
+    }
+
+    private String objectToJson(Object obj) {
+        StringBuilder json = new StringBuilder("{");
+        Field[] fields = obj.getClass().getDeclaredFields();
+        boolean first = true;
+        
+        for (Field field : fields) {
+            field.setAccessible(true);
+            try {
+                Object value = field.get(obj);
+                if (!first) json.append(",");
+                json.append("\"").append(field.getName()).append("\":");
+                json.append(convertToJson(value));
+                first = false;
+            } catch (Exception e) {
+                // Ignorer les champs inaccessibles
+            }
+        }
+        
+        json.append("}");
+        return json.toString();
+    }
+
+    private String escapeJson(String str) {
+        if (str == null) return "";
+        
+        return str.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
     }
 
     // 🔹 Classe interne pour retourner méthode + controller
