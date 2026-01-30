@@ -201,12 +201,24 @@ public class FrontServlet extends HttpServlet {
         }
     }
 
-    // 🔹 Appeler la méthode du controller avec les paramètres dynamiques (SPRINT 6 & 6 BIS)
     // 🔹 Appeler la méthode du controller avec les paramètres dynamiques (SPRINT 6, 6 BIS, 8)
     private Object invokeControllerMethod(ControllerMatch match, HttpServletRequest request, HttpServletResponse response) throws Exception {
         Object controllerInstance = match.controller.getDeclaredConstructor().newInstance();
         Parameter[] params = match.method.getParameters();
         Object[] args = new Object[params.length];
+
+        // SPRINT 11: INITIALISATION DE LA SESSION
+        HttpSession httpSession = request.getSession(false); // Ne pas créer de session si elle n'existe pas
+        Map<String, Object> sessionMap = new HashMap<>();
+        
+        // Récupérer les attributs existants de la session HTTP
+        if (httpSession != null) {
+            Enumeration<String> attributeNames = httpSession.getAttributeNames();
+            while (attributeNames.hasMoreElements()) {
+                String name = attributeNames.nextElement();
+                sessionMap.put(name, httpSession.getAttribute(name));
+            }
+        }
 
         // Vérifier si c'est une requête multipart (upload fichier)
         boolean isMultipart = isMultipartRequest(request);
@@ -244,9 +256,63 @@ public class FrontServlet extends HttpServlet {
             System.out.println("\nParamètre " + i + ": " + param.getName() + 
                             " (type: " + paramType.getSimpleName() + ")");
 
+            // SPRINT 11: GESTION DES SESSIONS
             // ==============================================
+            
+            // Cas 1: @SessionParam - un attribut spécifique
+            if (param.isAnnotationPresent(SessionParam.class)) {
+                SessionParam sessionParam = param.getAnnotation(SessionParam.class);
+                String attrName = sessionParam.value().isEmpty() ? param.getName() : sessionParam.value();
+                
+                System.out.println("  -> 📝 SPRINT 11: @SessionParam détecté - attribut: " + attrName);
+                
+                Object sessionValue = sessionMap.get(attrName);
+                
+                if (sessionValue != null) {
+                    // Convertir si nécessaire
+                    if (paramType.isAssignableFrom(sessionValue.getClass())) {
+                        args[i] = sessionValue;
+                        System.out.println("  -> ✓ Valeur session injectée: " + sessionValue);
+                    } else if (sessionValue instanceof String && isSimpleType(paramType)) {
+                        args[i] = convertParameter((String) sessionValue, paramType);
+                        System.out.println("  -> ✓ Valeur session convertie: " + args[i]);
+                    } else {
+                        args[i] = null;
+                        System.out.println("  -> ✗ Type incompatible");
+                    }
+                } else if (sessionParam.required()) {
+                    args[i] = getDefaultValue(paramType);
+                    System.out.println("  -> ✗ Attribut session non trouvé, default: " + args[i]);
+                } else {
+                    args[i] = null;
+                    System.out.println("  -> ∅ Attribut session optionnel non trouvé");
+                }
+                continue;
+            }
+            
+            // Cas 2: @SessionAttributes - toute la session comme Map
+            if (param.isAnnotationPresent(SessionAttributes.class)) {
+                System.out.println("  -> 📝 SPRINT 11: @SessionAttributes détecté");
+                
+                if (paramType == Map.class) {
+                    args[i] = new HashMap<>(sessionMap);
+                    System.out.println("  -> ✓ Session Map injectée avec " + sessionMap.size() + " attributs");
+                } else {
+                    args[i] = null;
+                    System.out.println("  -> ✗ @SessionAttributes nécessite Map<String, Object>");
+                }
+                continue;
+            }
+            
+            // Cas 3: HttpSession - injecter directement (optionnel)
+            if (paramType == HttpSession.class) {
+                System.out.println("  -> 📝 SPRINT 11: HttpSession détecté");
+                args[i] = httpSession != null ? httpSession : request.getSession(true);
+                System.out.println("  -> ✓ HttpSession injecté");
+                continue;
+            }
+
             // SPRINT 10: GESTION DES FICHIERS UPLOADÉS
-            // ==============================================
             if (param.isAnnotationPresent(FileUpload.class)) {
                 FileUpload fileUploadAnn = param.getAnnotation(FileUpload.class);
                 String fieldName = fileUploadAnn.value().isEmpty() ? param.getName() : fileUploadAnn.value();
@@ -371,6 +437,16 @@ public class FrontServlet extends HttpServlet {
         System.out.println("=== FIN DEBUG SPRINT 8 ===\n");
 
         Object result = match.method.invoke(controllerInstance, args);
+
+        // SPRINT 11: SAUVEGARDE DES ATTRIBUTS DE SESSION
+        // Après l'appel de la méthode, sauvegarder les modifications de session
+        if (!sessionMap.isEmpty() && httpSession != null) {
+            for (Map.Entry<String, Object> entry : sessionMap.entrySet()) {
+                httpSession.setAttribute(entry.getKey(), entry.getValue());
+            }
+            System.out.println("📝 SPRINT 11: Session sauvegardée avec " + sessionMap.size() + " attributs");
+        }
+
         if (match.method.isAnnotationPresent(JsonResponse.class)) {
         // Convertir le résultat en JSON et écrire dans la réponse
             String json = convertToJson(result);
@@ -427,27 +503,87 @@ public class FrontServlet extends HttpServlet {
 
     // 🔹 Gérer le type de retour d'une méthode
     private void handleReturnValue(Object retour, HttpServletRequest request, HttpServletResponse response)
-        throws ServletException, IOException {
-    
+            throws ServletException, IOException {
+        
+        System.out.println("🔵 handleReturnValue - Type: " + 
+            (retour != null ? retour.getClass().getSimpleName() : "null"));
+        
         if (retour == null) {
-            // JSON déjà traité ou erreur
             return;
         }
         
-        if (retour instanceof String) {
+        // Gestion des SessionModelView
+        if (retour instanceof SessionModelView smv) {
+            System.out.println("📝 SessionModelView détecté - Vue: " + smv.getView());
+            
+            // 1. Gérer les attributs de session
+            if (smv.hasSessionAttributes()) {
+                HttpSession session = request.getSession(true);
+                System.out.println("📝 Session ID: " + session.getId());
+                
+                for (Map.Entry<String, Object> entry : smv.getSessionAttributes().entrySet()) {
+                    if (entry.getValue() == null) {
+                        // Supprimer l'attribut
+                        session.removeAttribute(entry.getKey());
+                        System.out.println("🗑️ Session attribut supprimé: " + entry.getKey());
+                    } else {
+                        // Ajouter/modifier l'attribut
+                        session.setAttribute(entry.getKey(), entry.getValue());
+                        System.out.println("📝 Session attribut ajouté: " + entry.getKey() + " = " + entry.getValue());
+                    }
+                }
+            }
+            
+            // 2. Ajouter les attributs normaux à la requête
+            for (Map.Entry<String, Object> entry : smv.getModel().entrySet()) {
+                request.setAttribute(entry.getKey(), entry.getValue());
+            }
+            
+            // 3. Forward vers la vue
+            forwardToView(smv.getView(), request, response);
+            
+        } else if (retour instanceof String) {
             response.setContentType("text/plain");
             response.getWriter().print((String) retour);
+            
         } else if (retour instanceof ModelView mv) {
+            System.out.println("🔵 ModelView normal - Vue: " + mv.getView());
+            
+            // Ajouter les attributs à la requête
             for (Map.Entry<String, Object> entry : mv.getModel().entrySet()) {
                 request.setAttribute(entry.getKey(), entry.getValue());
             }
-            RequestDispatcher dispatcher = request.getRequestDispatcher(mv.getView());
-            dispatcher.forward(request, response);
+            
+            // Forward vers la vue
+            forwardToView(mv.getView(), request, response);
+            
         } else {
             response.setContentType("text/plain");
-            response.getWriter().println("Retour: " + retour);
-            response.getWriter().println("Type: " + retour.getClass().getName());
+            response.getWriter().println("Type de retour: " + retour.getClass().getSimpleName());
         }
+    }
+
+    private void forwardToView(String viewPath, HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+        
+        System.out.println("🔵 Tentative forward vers: " + viewPath);
+        
+        if (viewPath == null || viewPath.trim().isEmpty()) {
+            response.setContentType("text/plain");
+            response.getWriter().println("Erreur: Vue non spécifiée");
+            return;
+        }
+        
+        RequestDispatcher dispatcher = request.getRequestDispatcher(viewPath);
+        if (dispatcher == null) {
+            System.out.println("❌ RequestDispatcher null pour: " + viewPath);
+            response.setContentType("text/plain");
+            response.getWriter().println("Vue introuvable: " + viewPath);
+            return;
+        }
+        
+        dispatcher.forward(request, response);
+        System.out.println("✅ Forward réussi vers: " + viewPath);
     }
 
     private Map<String, String> extractNamedGroups(Matcher matcher) {
