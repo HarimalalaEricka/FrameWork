@@ -20,6 +20,7 @@ import java.util.List;
 import com.framework.core.ClassScanner;
 import com.framework.model.*;
 import com.framework.annotation.*;
+import com.framework.auth.*;
 import javax.servlet.annotation.MultipartConfig;
 
 @MultipartConfig(
@@ -34,11 +35,18 @@ public class FrontServlet extends HttpServlet {
     private Map<Pattern, Class<?>> controllerMapping = new HashMap<>();
     private String packageController = "com.app.controllers";
     private Map<Pattern, String> httpMethodMapping = new HashMap<>();
+    private AuthConfig authConfig;
+    private UserPrincipal principalInstance;
 
     @Override
     public void init() throws ServletException {
         try {
             System.out.println("=== FrontServlet.init() : scan des controllers ===");
+
+            // Charger la configuration d'authentification
+            this.authConfig = AuthConfigLoader.load();
+            initializePrincipalClass();
+
             ClassScanner scanner = new ClassScanner(packageController);
             scanner.scanControllers();
             urlMapping.putAll(scanner.getUrlMapping());
@@ -88,22 +96,11 @@ public class FrontServlet extends HttpServlet {
             return;
         }
 
-        // 3️⃣ Vérifier la méthode HTTP
-        // String requiredMethod = httpMethodMapping.get(match.pattern);
-        
-        // if (requiredMethod != null) {
-        //     if ("ANY".equals(requiredMethod)) {
-        //         // @HandleUrl : accepte GET et POST
-        //     } else if (!requiredMethod.equalsIgnoreCase(requestMethod)) {
-        //         // Méthode HTTP incorrecte
-        //         response.setContentType("text/plain");
-        //         response.getWriter().println("Erreur 405 - Méthode non autorisée");
-        //         response.getWriter().println("URL: " + url);
-        //         response.getWriter().println("Méthode requise: " + requiredMethod);
-        //         response.getWriter().println("Méthode reçue: " + requestMethod);
-        //         return;
-        //     }
-        // }
+        //  VÉRIFICATION DE SÉCURITÉ 
+        if (!checkSecurity(match.method, request, response)) {
+            // Accès refusé - déjà géré dans checkSecurity()
+            return;
+        }
 
         // 4 Appeler la méthode avec les paramètres dynamiques
         try {
@@ -117,6 +114,24 @@ public class FrontServlet extends HttpServlet {
             e.printStackTrace();
             response.setContentType("text/plain");
             response.getWriter().println("Erreur framework : " + e.getMessage());
+        }
+    }
+
+    private void initializePrincipalClass() throws Exception {
+        String principalClass = authConfig.getPrincipalClass();
+        if (principalClass != null && !principalClass.trim().isEmpty()) {
+            try {
+                Class<?> clazz = Class.forName(principalClass);
+                if (UserPrincipal.class.isAssignableFrom(clazz)) {
+                    principalInstance = (UserPrincipal) clazz.getDeclaredConstructor().newInstance();
+                    System.out.println("✅ Classe UserPrincipal chargée: " + principalClass);
+                } else {
+                    throw new ServletException("La classe " + principalClass + 
+                        " doit implémenter UserPrincipal");
+                }
+            } catch (ClassNotFoundException e) {
+                System.err.println("⚠️ Classe UserPrincipal non trouvée: " + principalClass);
+            }
         }
     }
 
@@ -201,12 +216,24 @@ public class FrontServlet extends HttpServlet {
         }
     }
 
-    // 🔹 Appeler la méthode du controller avec les paramètres dynamiques (SPRINT 6 & 6 BIS)
     // 🔹 Appeler la méthode du controller avec les paramètres dynamiques (SPRINT 6, 6 BIS, 8)
     private Object invokeControllerMethod(ControllerMatch match, HttpServletRequest request, HttpServletResponse response) throws Exception {
         Object controllerInstance = match.controller.getDeclaredConstructor().newInstance();
         Parameter[] params = match.method.getParameters();
         Object[] args = new Object[params.length];
+
+        // SPRINT 11: INITIALISATION DE LA SESSION
+        HttpSession httpSession = request.getSession(false); // Ne pas créer de session si elle n'existe pas
+        Map<String, Object> sessionMap = new HashMap<>();
+        
+        // Récupérer les attributs existants de la session HTTP
+        if (httpSession != null) {
+            Enumeration<String> attributeNames = httpSession.getAttributeNames();
+            while (attributeNames.hasMoreElements()) {
+                String name = attributeNames.nextElement();
+                sessionMap.put(name, httpSession.getAttribute(name));
+            }
+        }
 
         // Vérifier si c'est une requête multipart (upload fichier)
         boolean isMultipart = isMultipartRequest(request);
@@ -244,9 +271,83 @@ public class FrontServlet extends HttpServlet {
             System.out.println("\nParamètre " + i + ": " + param.getName() + 
                             " (type: " + paramType.getSimpleName() + ")");
 
+            // SPRINT 11BIS : AUTHENTIFICATION
+            // Injection de @AuthPrincipal
+            if (param.isAnnotationPresent(AuthPrincipal.class)) {
+                System.out.println("  -> 👤 @AuthPrincipal détecté");
+                
+                AuthPrincipal authPrincipalAnn = param.getAnnotation(AuthPrincipal.class);
+                UserPrincipal userPrincipal = getCurrentPrincipal(request);
+                
+                if (userPrincipal != null && paramType.isAssignableFrom(userPrincipal.getClass())) {
+                    args[i] = userPrincipal;
+                    System.out.println("  -> ✓ UserPrincipal injecté: " + userPrincipal.getUsername());
+                } else if (authPrincipalAnn.required()) {
+                    throw new AuthSecurityException("Authentification requise pour accéder à cette ressource");
+                } else {
+                    args[i] = null;
+                    System.out.println("  -> ∅ UserPrincipal optionnel non disponible");
+                }
+                continue;
+            }
+
+            // SPRINT 11: GESTION DES SESSIONS
             // ==============================================
+            
+            // Cas 1: @SessionParam - un attribut spécifique
+            if (param.isAnnotationPresent(SessionParam.class)) {
+                SessionParam sessionParam = param.getAnnotation(SessionParam.class);
+                String attrName = sessionParam.value().isEmpty() ? param.getName() : sessionParam.value();
+                
+                System.out.println("  -> 📝 SPRINT 11: @SessionParam détecté - attribut: " + attrName);
+                
+                Object sessionValue = sessionMap.get(attrName);
+                
+                if (sessionValue != null) {
+                    // Convertir si nécessaire
+                    if (paramType.isAssignableFrom(sessionValue.getClass())) {
+                        args[i] = sessionValue;
+                        System.out.println("  -> ✓ Valeur session injectée: " + sessionValue);
+                    } else if (sessionValue instanceof String && isSimpleType(paramType)) {
+                        args[i] = convertParameter((String) sessionValue, paramType);
+                        System.out.println("  -> ✓ Valeur session convertie: " + args[i]);
+                    } else {
+                        args[i] = null;
+                        System.out.println("  -> ✗ Type incompatible");
+                    }
+                } else if (sessionParam.required()) {
+                    args[i] = getDefaultValue(paramType);
+                    System.out.println("  -> ✗ Attribut session non trouvé, default: " + args[i]);
+                } else {
+                    args[i] = null;
+                    System.out.println("  -> ∅ Attribut session optionnel non trouvé");
+                }
+                continue;
+            }
+            
+            // Cas 2: @SessionAttributes - toute la session comme Map
+            if (param.isAnnotationPresent(SessionAttributes.class)) {
+                System.out.println("  -> 📝 SPRINT 11: @SessionAttributes détecté");
+                
+                if (paramType == Map.class) {
+                    args[i] = new HashMap<>(sessionMap);
+                    System.out.println("  -> ✓ Session Map injectée avec " + sessionMap.size() + " attributs");
+                } else {
+                    args[i] = null;
+                    System.out.println("  -> ✗ @SessionAttributes nécessite Map<String, Object>");
+                }
+                continue;
+            }
+            
+            // Cas 3: HttpSession - injecter directement (optionnel)
+            if (paramType == HttpSession.class) {
+                System.out.println("  -> 📝 SPRINT 11: HttpSession détecté");
+                args[i] = httpSession != null ? httpSession : request.getSession(true);
+                System.out.println("  -> ✓ HttpSession injecté");
+                continue;
+            }
+
             // SPRINT 10: GESTION DES FICHIERS UPLOADÉS
-            // ==============================================
             if (param.isAnnotationPresent(FileUpload.class)) {
                 FileUpload fileUploadAnn = param.getAnnotation(FileUpload.class);
                 String fieldName = fileUploadAnn.value().isEmpty() ? param.getName() : fileUploadAnn.value();
@@ -371,6 +472,16 @@ public class FrontServlet extends HttpServlet {
         System.out.println("=== FIN DEBUG SPRINT 8 ===\n");
 
         Object result = match.method.invoke(controllerInstance, args);
+
+        // SPRINT 11: SAUVEGARDE DES ATTRIBUTS DE SESSION
+        // Après l'appel de la méthode, sauvegarder les modifications de session
+        if (!sessionMap.isEmpty() && httpSession != null) {
+            for (Map.Entry<String, Object> entry : sessionMap.entrySet()) {
+                httpSession.setAttribute(entry.getKey(), entry.getValue());
+            }
+            System.out.println("📝 SPRINT 11: Session sauvegardée avec " + sessionMap.size() + " attributs");
+        }
+
         if (match.method.isAnnotationPresent(JsonResponse.class)) {
         // Convertir le résultat en JSON et écrire dans la réponse
             String json = convertToJson(result);
@@ -427,27 +538,87 @@ public class FrontServlet extends HttpServlet {
 
     // 🔹 Gérer le type de retour d'une méthode
     private void handleReturnValue(Object retour, HttpServletRequest request, HttpServletResponse response)
-        throws ServletException, IOException {
-    
+            throws ServletException, IOException {
+        
+        System.out.println("🔵 handleReturnValue - Type: " + 
+            (retour != null ? retour.getClass().getSimpleName() : "null"));
+        
         if (retour == null) {
-            // JSON déjà traité ou erreur
             return;
         }
         
-        if (retour instanceof String) {
+        // Gestion des SessionModelView
+        if (retour instanceof SessionModelView smv) {
+            System.out.println("📝 SessionModelView détecté - Vue: " + smv.getView());
+            
+            // 1. Gérer les attributs de session
+            if (smv.hasSessionAttributes()) {
+                HttpSession session = request.getSession(true);
+                System.out.println("📝 Session ID: " + session.getId());
+                
+                for (Map.Entry<String, Object> entry : smv.getSessionAttributes().entrySet()) {
+                    if (entry.getValue() == null) {
+                        // Supprimer l'attribut
+                        session.removeAttribute(entry.getKey());
+                        System.out.println("🗑️ Session attribut supprimé: " + entry.getKey());
+                    } else {
+                        // Ajouter/modifier l'attribut
+                        session.setAttribute(entry.getKey(), entry.getValue());
+                        System.out.println("📝 Session attribut ajouté: " + entry.getKey() + " = " + entry.getValue());
+                    }
+                }
+            }
+            
+            // 2. Ajouter les attributs normaux à la requête
+            for (Map.Entry<String, Object> entry : smv.getModel().entrySet()) {
+                request.setAttribute(entry.getKey(), entry.getValue());
+            }
+            
+            // 3. Forward vers la vue
+            forwardToView(smv.getView(), request, response);
+            
+        } else if (retour instanceof String) {
             response.setContentType("text/plain");
             response.getWriter().print((String) retour);
+            
         } else if (retour instanceof ModelView mv) {
+            System.out.println("🔵 ModelView normal - Vue: " + mv.getView());
+            
+            // Ajouter les attributs à la requête
             for (Map.Entry<String, Object> entry : mv.getModel().entrySet()) {
                 request.setAttribute(entry.getKey(), entry.getValue());
             }
-            RequestDispatcher dispatcher = request.getRequestDispatcher(mv.getView());
-            dispatcher.forward(request, response);
+            
+            // Forward vers la vue
+            forwardToView(mv.getView(), request, response);
+            
         } else {
             response.setContentType("text/plain");
-            response.getWriter().println("Retour: " + retour);
-            response.getWriter().println("Type: " + retour.getClass().getName());
+            response.getWriter().println("Type de retour: " + retour.getClass().getSimpleName());
         }
+    }
+
+    private void forwardToView(String viewPath, HttpServletRequest request, HttpServletResponse response)
+            throws ServletException, IOException {
+        
+        System.out.println("🔵 Tentative forward vers: " + viewPath);
+        
+        if (viewPath == null || viewPath.trim().isEmpty()) {
+            response.setContentType("text/plain");
+            response.getWriter().println("Erreur: Vue non spécifiée");
+            return;
+        }
+        
+        RequestDispatcher dispatcher = request.getRequestDispatcher(viewPath);
+        if (dispatcher == null) {
+            System.out.println("❌ RequestDispatcher null pour: " + viewPath);
+            response.setContentType("text/plain");
+            response.getWriter().println("Vue introuvable: " + viewPath);
+            return;
+        }
+        
+        dispatcher.forward(request, response);
+        System.out.println("✅ Forward réussi vers: " + viewPath);
     }
 
     private Map<String, String> extractNamedGroups(Matcher matcher) {
@@ -905,6 +1076,163 @@ public class FrontServlet extends HttpServlet {
             }
             
             return outputStream.toString("UTF-8");
+        }
+    }
+
+    // AUTHENTIFICATION
+    /**
+     * Vérifie les annotations de sécurité sur la méthode
+     */
+    private boolean checkSecurity(Method method, HttpServletRequest request, HttpServletResponse response) 
+            throws IOException, ServletException {
+        
+        // 1. Récupérer le UserPrincipal de la session
+        UserPrincipal principal = getCurrentPrincipal(request);
+        
+        // 2. Vérifier @Authenticated
+        if (method.isAnnotationPresent(Authenticated.class)) {
+            Authenticated authAnnotation = method.getAnnotation(Authenticated.class);
+            
+            if (principal == null || !principal.isAuthenticated()) {
+                String redirectUrl = authAnnotation.redirectTo();
+                if (redirectUrl.isEmpty()) {
+                    redirectUrl = authConfig.getDefaultRedirect();
+                }
+                System.out.println("🔒 Accès refusé: non authentifié -> redirection vers " + redirectUrl);
+                response.sendRedirect(request.getContextPath() + redirectUrl);
+                return false;
+            }
+        }
+        
+        // 3. Vérifier @AllowedRoles
+        if (method.isAnnotationPresent(AllowedRoles.class)) {
+            AllowedRoles rolesAnnotation = method.getAnnotation(AllowedRoles.class);
+            
+            if (principal == null || !principal.isAuthenticated()) {
+                handleUnauthenticatedAccess(response);
+                return false;
+            }
+            
+            boolean accessGranted = checkRoles(principal, rolesAnnotation.value(), rolesAnnotation.strategy());
+            
+            if (!accessGranted) {
+                System.out.println("🔒 Accès refusé: rôles insuffisants pour " + principal.getUsername());
+                forwardToErrorPage(rolesAnnotation.message(), 403, request, response);
+                return false;
+            }
+        }
+        
+        // 4. Vérifier @AllowedAuthorities
+        if (method.isAnnotationPresent(AllowedAuthorities.class)) {
+            AllowedAuthorities authsAnnotation = method.getAnnotation(AllowedAuthorities.class);
+            
+            if (principal == null || !principal.isAuthenticated()) {
+                handleUnauthenticatedAccess(response);
+                return false;
+            }
+            
+            boolean accessGranted = checkAuthorities(principal, authsAnnotation.value(), authsAnnotation.strategy());
+            
+            if (!accessGranted) {
+                System.out.println("🔒 Accès refusé: autorisations insuffisantes pour " + principal.getUsername());
+                forwardToErrorPage(authsAnnotation.message(), 403, request, response);
+                return false;
+            }
+        }
+        
+        return true;
+    }
+
+    /**
+     * Récupère le UserPrincipal courant depuis la session
+     */
+    private UserPrincipal getCurrentPrincipal(HttpServletRequest request) {
+        HttpSession session = request.getSession(false);
+        if (session != null) {
+            Object principal = session.getAttribute(authConfig.getSessionKey());
+            if (principal instanceof UserPrincipal) {
+                return (UserPrincipal) principal;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Vérifie les rôles
+     */
+    private boolean checkRoles(UserPrincipal principal, String[] requiredRoles, AllowedRoles.Strategy strategy) {
+        if (requiredRoles.length == 0) {
+            return true;
+        }
+        
+        if (strategy == AllowedRoles.Strategy.ANY) {
+            for (String role : requiredRoles) {
+                if (principal.hasRole(role)) {
+                    return true;
+                }
+            }
+            return false;
+        } else { // ALL
+            for (String role : requiredRoles) {
+                if (!principal.hasRole(role)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    /**
+     * Vérifie les autorisations
+     */
+    private boolean checkAuthorities(UserPrincipal principal, String[] requiredAuthorities, AllowedAuthorities.Strategy strategy) {
+        if (requiredAuthorities.length == 0) {
+            return true;
+        }
+        
+        if (strategy == AllowedAuthorities.Strategy.ANY) {
+            for (String auth : requiredAuthorities) {
+                if (principal.hasAuthority(auth)) {
+                    return true;
+                }
+            }
+            return false;
+        } else { // ALL
+            for (String auth : requiredAuthorities) {
+                if (!principal.hasAuthority(auth)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    /**
+     * Gère l'accès non authentifié
+     */
+    private void handleUnauthenticatedAccess(HttpServletResponse response) throws IOException {
+        System.out.println("🔒 Accès refusé: utilisateur non authentifié");
+        response.sendRedirect(authConfig.getDefaultRedirect());
+    }
+
+    /**
+     * Redirige vers une page d'erreur
+     */
+    private void forwardToErrorPage(String message, int statusCode, 
+                                HttpServletRequest request, HttpServletResponse response) 
+            throws ServletException, IOException {
+        
+        response.setStatus(statusCode);
+        request.setAttribute("errorMessage", message);
+        request.setAttribute("statusCode", statusCode);
+        
+        RequestDispatcher dispatcher = request.getRequestDispatcher(authConfig.getErrorPage());
+        if (dispatcher != null) {
+            dispatcher.forward(request, response);
+        } else {
+            response.setContentType("text/html");
+            response.getWriter().println("<h1>Erreur " + statusCode + "</h1>");
+            response.getWriter().println("<p>" + message + "</p>");
         }
     }
 
